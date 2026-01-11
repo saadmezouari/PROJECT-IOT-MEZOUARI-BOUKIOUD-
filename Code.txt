@@ -1,0 +1,165 @@
+# ===============================
+# Importation des bibliothèques
+# ===============================
+
+# Manipulation des données
+import pandas as pd
+import numpy as np
+
+# Visualisation
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# Prétraitement des données
+from sklearn.preprocessing import MinMaxScaler
+
+# Modèles de Machine Learning
+from sklearn.ensemble import RandomForestRegressor
+
+# Évaluation des performances
+from sklearn.metrics import mean_squared_error, mean_absolute_error
+
+# Sauvegarde du modèle
+import joblib
+
+
+# ===============================
+# Chargement des données
+# ===============================
+
+data_train = pd.read_csv("train_FD001.txt", sep=" ", header=None)
+data_test  = pd.read_csv("test_FD001.txt", sep=" ", header=None)
+
+# Suppression des colonnes vides en fin de fichier
+data_train = data_train.iloc[:, :26]
+data_test  = data_test.iloc[:, :26]
+
+# Attribution des noms de colonnes
+col_names = ['engine_id', 'cycle'] + \
+            [f'oper_setting_{i}' for i in range(1, 4)] + \
+            [f'sensor_{i}' for i in range(1, 22)]
+
+data_train.columns = col_names
+data_test.columns  = col_names
+
+# Exploration rapide des données
+data_train.head()
+data_train.info()
+data_train.describe()
+
+
+# ===============================
+# Visualisation d’un capteur
+# ===============================
+
+engine_1_data = data_train[data_train['engine_id'] == 1]
+
+plt.figure(figsize=(10, 5))
+plt.plot(engine_1_data['cycle'], engine_1_data['sensor_7'])
+plt.xlabel("Cycle")
+plt.ylabel("Capteur 7")
+plt.title("Évolution du capteur 7 pour le moteur 1")
+plt.show()
+
+
+# ===============================
+# Calcul du Remaining Useful Life (RUL)
+# ===============================
+
+max_cycles = data_train.groupby('engine_id')['cycle'].max()
+data_train = data_train.merge(max_cycles, on='engine_id', suffixes=('', '_max'))
+
+data_train['RUL'] = data_train['cycle_max'] - data_train['cycle']
+data_train.drop('cycle_max', axis=1, inplace=True)
+
+
+# ===============================
+# Suppression des colonnes constantes
+# ===============================
+
+cols_constantes = [c for c in data_train.columns if data_train[c].std() == 0]
+
+data_train.drop(columns=cols_constantes, inplace=True)
+data_test.drop(columns=cols_constantes, inplace=True)
+
+
+# ===============================
+# Préparation des données
+# ===============================
+
+features = data_train.drop(['engine_id', 'cycle', 'RUL'], axis=1)
+target = data_train['RUL']
+
+scaler = MinMaxScaler()
+features_scaled = scaler.fit_transform(features)
+
+
+# ===============================
+# Séparation train / validation
+# ===============================
+
+from sklearn.model_selection import train_test_split
+
+X_train, X_val, y_train, y_val = train_test_split(
+    features_scaled, target, test_size=0.2, random_state=42
+)
+
+
+# ===============================
+# Entraînement du modèle
+# ===============================
+
+rf_model = RandomForestRegressor(n_estimators=100, random_state=42)
+rf_model.fit(X_train, y_train)
+
+
+# ===============================
+# Évaluation sur validation
+# ===============================
+
+y_val_pred = rf_model.predict(X_val)
+
+mse_val = mean_squared_error(y_val, y_val_pred)
+print("MSE sur validation :", mse_val)
+
+plt.figure(figsize=(10, 5))
+plt.plot(y_val.values, label="RUL réel")
+plt.plot(y_val_pred, label="RUL prédit")
+plt.legend()
+plt.title("Comparaison RUL réel vs prédit (validation)")
+plt.show()
+
+
+# ===============================
+# Prédiction sur le jeu de test
+# ===============================
+
+test_features = data_test.drop(['engine_id', 'cycle'], axis=1)
+test_features_scaled = scaler.transform(test_features)
+
+data_test['RUL_pred'] = rf_model.predict(test_features_scaled)
+
+# Récupérer la prédiction du dernier cycle de chaque moteur
+rul_pred_final = data_test.groupby('engine_id')['RUL_pred'].last().values
+
+
+# ===============================
+# Évaluation finale sur le test
+# ===============================
+
+rul_true = pd.read_csv("RUL_FD001.txt", header=None)[0].values
+
+mse_test = mean_squared_error(rul_true, rul_pred_final)
+mae_test = mean_absolute_error(rul_true, rul_pred_final)
+
+print("MSE test :", mse_test)
+print("MAE test :", mae_test)
+
+
+# ===============================
+# Sauvegarde et chargement du modèle
+# ===============================
+
+joblib.dump(rf_model, "random_forest_fd001.pkl")
+
+rf_loaded = joblib.load("random_forest_fd001.pkl")
